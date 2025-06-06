@@ -15,8 +15,8 @@ from io import BytesIO
 from PIL import Image
 from pathlib import Path
 
-# 版本號:V1.4.0
-# 創建日期:2025/05/27
+# 版本號:V2.1.0
+# 創建日期:2025/06/04
 
 # 設定 logger
 logger = logging.getLogger("RimoBooth")
@@ -26,7 +26,7 @@ logger.setLevel(logging.DEBUG)  # 開發時使用 DEBUG，正式環境可改為 
 file_handler = RotatingFileHandler(
     filename="RimoBooth.log",
     maxBytes=5 * 1024 * 1024,
-    backupCount=3,
+    backupCount=1, # 更改為1個備份
     encoding="utf-8"
 )
 file_handler.setLevel(logging.INFO)
@@ -42,13 +42,25 @@ console_handler.setFormatter(console_fmt)
 logger.addHandler(console_handler)
 
 BASE_DIR = Path(__file__).parent
-AVATAR_FILE = "Avatar.json"
+AVATAR_FILE = BASE_DIR / "Avatar.json"
 LANGUAGE_FILE = BASE_DIR / "languages.json"
-SCAN_RECORD_FILE = "scan_records.json"
-IMAGE_CACHE_DIR = "CachedImages"
-CONFIG_FILE = "config.json"
+SCAN_RECORD_FILE = BASE_DIR / "scan_records.json"
+IMAGE_CACHE_DIR = BASE_DIR / "CachedImages"
+CONFIG_FILE = BASE_DIR / "config.json"
 
-
+# 分類英文對應表
+CATEGORY_MAP = {
+    "服裝": "Cloth",
+    "配件": "Item",
+    "髮型": "Hair",
+    "其他": "Other",
+    "Cloth": "Cloth",
+    "Item": "Item",
+    "Hair": "Hair",
+    "Other": "Other"
+}
+CATEGORY_LIST_EN = ["Cloth", "Item", "Hair", "Other"]
+CATEGORY_LIST_ALL = ["All"] + CATEGORY_LIST_EN
 
 def load_config():
     """讀取用戶設置，如語言"""
@@ -114,7 +126,7 @@ REQUIRED_KEYS = {
 DEFAULT_STRINGS = {
     "window_title": "衣服查詢器",
     "author": "創作者: Rimo",
-    "version": "版本號: V1.4.0",
+    "version": "版本號: V2.0.0",
     "reload": "重新讀取",
     "add_character": "新增角色",
     "select_language": "選擇語言",
@@ -171,37 +183,42 @@ class ZipQueryApp(QWidget):
         try:
             logger.info("開始初始化 ZipQueryApp 基礎元件")
             super().__init__()
-            
+
             # 1. 初始化基本樣式
             logger.info("正在套用對話框樣式")
             self._apply_dialog_style()
-            
-            # 2. 初始化基本變數
+
+            # 1.1 初始化 scan_folder 屬性，避免 AttributeError
+            self.scan_folder = None
+
+            # 2. 初始化基本設定
             logger.info("正在初始化基本設定")
-            self.config = {"language": "zh-TW"}
-            
+            self.config = load_config()
+            logger.info(f"讀取到 config: {self.config}")
+
             logger.info("正在載入語言檔")
             self.languages = load_languages()
-            self.current_language = "zh-TW"
-            
+            self.current_language = self.config.get("language", "zh-TW")
+
             logger.info("正在載入角色設定")
             self.avatars = load_avatars()
             logger.info(f"已載入 {len(self.avatars)} 個角色設定")
-            
-            self.sort_mode = "加入時間 ↓"
+
+            self.sort_mode = "名稱 A→Z"  # 預設排序
             self.zip_files = {}
-            
-            # 3. 語言選擇對話框
-            logger.info("顯示語言選擇對話框")
-            lang, ok = self._show_language_dialog()
-            if ok and lang:
-                self.config["language"] = lang
-                self.current_language = lang
-                save_config(self.config)
-                logger.info(f"用戶已選擇語言: {lang}")
-            else:
-                logger.info("用戶取消選擇語言，使用預設值")
-            
+
+            # 3. 僅在第一次啟動或 config 無語言時詢問語言
+            if not self.config.get("language"):
+                logger.info("首次啟動或無語言設定，顯示語言選擇對話框")
+                lang, ok = self._show_language_dialog()
+                if ok and lang:
+                    self.config["language"] = lang
+                    self.current_language = lang
+                    save_config(self.config)
+                    logger.info(f"用戶已選擇語言: {lang}")
+                else:
+                    logger.info("用戶取消選擇語言，使用預設值")
+
             # 4. 檢查資料庫文件
             logger.info("正在檢查資料庫文件")
             if not os.path.exists(SCAN_RECORD_FILE):
@@ -220,22 +237,22 @@ class ZipQueryApp(QWidget):
                     logger.info("用戶取消建立新資料庫，程式將結束")
                     QApplication.quit()
                     return
-            
+
             # 5. 初始化 UI
             logger.info("開始初始化使用者介面")
             self.initUI()
             logger.info("使用者介面初始化完成")
-            
+
             # 6. 載入並清理記錄
             logger.info("開始載入並清理記錄")
             self.clean_and_load_records()
             logger.info("記錄清理和載入完成")
-            
+
             # 7. 顯示主視窗
             logger.info("顯示主視窗")
             self.show()
             logger.info("ZipQueryApp 初始化完成")
-            
+
         except Exception as e:
             logger.exception("初始化 ZipQueryApp 時發生嚴重錯誤")
             self._show_error_dialog("錯誤", f"初始化程式時發生嚴重錯誤：\n{str(e)}")
@@ -342,7 +359,7 @@ class ZipQueryApp(QWidget):
         logger.info("開始清理並載入記錄")
         
         # 從程式所在資料夾讀取資料庫檔案
-        scan_record_path = BASE_DIR / SCAN_RECORD_FILE
+        scan_record_path = os.path.join(BASE_DIR, SCAN_RECORD_FILE)
         logger.info("讀取資料庫檔案：%s", scan_record_path)
             
         try:
@@ -383,70 +400,121 @@ class ZipQueryApp(QWidget):
         header_layout.addStretch()
         self.language_selector = QComboBox()
         self.language_selector.addItems(self.languages.keys())
+        self.language_selector.setCurrentText(self.current_language)
         self.language_selector.currentTextChanged.connect(self.change_language)
         header_layout.addWidget(self.language_selector)
         main_layout.addLayout(header_layout)
 
-        # ===== 主體區塊：QSplitter 左右分割 =====
-        splitter = QSplitter()
-        splitter.setOrientation(Qt.Orientation.Horizontal)
+        # ===== 主體區塊：水平分割 =====
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # ===== 左側篩選/搜尋欄 =====
+        # ===== 左側區域：篩選欄 + 詳細資料 =====
         left_widget = QWidget()
-        left_layout = QVBoxLayout()
+        left_layout = QVBoxLayout(left_widget)
         left_layout.setSpacing(12)
-        # 搜尋欄
+
+        # === 上方篩選區 ===
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜尋資產…")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.returnPressed.connect(self.on_search)
         left_layout.addWidget(self.search_input)
+        
         # 類型篩選
-        left_layout.addWidget(QLabel("資產類型："))
+        self.asset_type_label = QLabel("資產類型：")
+        left_layout.addWidget(self.asset_type_label)
         self.asset_type_combo = QComboBox()
         self.asset_type_combo.addItems(["全部", "Avatar", "相關", "World"])
         self.asset_type_combo.currentTextChanged.connect(self.on_type_changed)
         left_layout.addWidget(self.asset_type_combo)
+        
         # 分類篩選
-        left_layout.addWidget(QLabel("分類："))
+        self.category_label = QLabel("分類：")
+        left_layout.addWidget(self.category_label)
         self.category_combo = QComboBox()
-        self.category_combo.addItems(["全部", "服裝", "配件", "髮型", "其他"])
+        self.category_combo.addItems(["All"] + CATEGORY_LIST_EN)
         self.category_combo.currentTextChanged.connect(self.on_category_changed)
         left_layout.addWidget(self.category_combo)
+        
         # 標籤篩選
-        left_layout.addWidget(QLabel("標籤："))
+        self.tags_label = QLabel("標籤：")
+        left_layout.addWidget(self.tags_label)
         self.tag_input = QLineEdit()
-        self.tag_input.setPlaceholderText("輸入標籤…")
+        self.tag_input.setPlaceholderText("Enter tags (suggest English, comma separated)...")
         self.tag_input.returnPressed.connect(self.on_tag_search)
         left_layout.addWidget(self.tag_input)
+        
         # 支援 Avatar
         self.avatar_support_checkbox = QCheckBox("僅顯示支援 Avatar")
         self.avatar_support_checkbox.stateChanged.connect(self.on_avatar_support_changed)
         left_layout.addWidget(self.avatar_support_checkbox)
+        
         # 角色列表
-        left_layout.addWidget(QLabel("角色："))
+        self.character_label = QLabel("角色：")
+        left_layout.addWidget(self.character_label)
         self.character_combo = QComboBox()
         self.character_combo.addItems(self.avatars)
         self.character_combo.currentTextChanged.connect(self.filter_files)
         left_layout.addWidget(self.character_combo)
-        left_layout.addStretch()
-        left_widget.setLayout(left_layout)
-        splitter.addWidget(left_widget)
 
-        # ===== 右側分為預覽區和詳細資料區 =====
-        right_container = QWidget()
-        right_container_layout = QHBoxLayout()
-        
-        # === 中間預覽區 ===
+        # === 下方詳細資料區 ===
+        details_widget = QFrame()
+        details_widget.setFrameShape(QFrame.Shape.Box)
+        details_widget.setLineWidth(1)
+        details_widget.setStyleSheet("QFrame { background-color: #f9f9f9; border: 1px solid #bbb; border-radius: 8px; }")
+        details_layout = QVBoxLayout(details_widget)
+        details_layout.setContentsMargins(8, 8, 8, 8)
+        details_layout.setSpacing(6)
+
+        # 標題與修改按鈕
+        details_title_row = QHBoxLayout()
+        self.details_title_label = QLabel("詳細資料")
+        details_title_row.addWidget(self.details_title_label)
+        self.edit_button = QPushButton("修改資料")
+        self.edit_button.clicked.connect(self.edit_record)
+        details_title_row.addWidget(self.edit_button)
+        details_layout.addLayout(details_title_row)
+
+        # 預覽圖
+        self.details_image = QLabel()
+        self.details_image.setFixedSize(300, 300)  # 稍微縮小以適應左側面板
+        self.details_image.setScaledContents(True)
+        details_layout.addWidget(self.details_image)
+
+        # 名稱
+        self.details_name = QLabel()
+        self.details_name.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_name.setWordWrap(True)
+        self.details_name.mousePressEvent = lambda e: self.copy_name_to_clipboard()
+        details_layout.addWidget(self.details_name)
+
+        # 網址
+        self.details_url = QLabel()
+        self.details_url.setWordWrap(True)
+        details_layout.addWidget(self.details_url)
+
+        # 標籤
+        self.details_tags_label = QLabel("標籤：")
+        self.details_tags_label.setWordWrap(True)
+        details_layout.addWidget(self.details_tags_label)
+
+        # 標籤複選框區塊
+        self.details_tag_checkboxes = QVBoxLayout()
+        details_layout.addLayout(self.details_tag_checkboxes)
+
+        # 將詳細資料區加入左側面板
+        left_layout.addWidget(details_widget)
+
+        # ===== 右側預覽區 =====
         preview_widget = QWidget()
-        preview_layout = QVBoxLayout()
+        preview_layout = QVBoxLayout(preview_widget)
         
         # 排序區域
         sort_layout = QHBoxLayout()
-        sort_layout.addWidget(QLabel("排序方式："))
+        self.sort_label = QLabel("排序方式：")
+        sort_layout.addWidget(self.sort_label)
         self.sort_mode_combo = QComboBox()
-        modes = ['加入時間 ↓', '加入時間 ↑', '名稱 A→Z', '名稱 Z→A']
-        self.sort_mode_combo.addItems(modes)
+        self.sort_mode_combo.addItems(['名稱 A→Z', '名稱 Z→A'])
         self.sort_mode_combo.setCurrentText(self.sort_mode)
         self.sort_mode_combo.currentTextChanged.connect(self.on_sort_mode_changed)
         sort_layout.addWidget(self.sort_mode_combo)
@@ -458,60 +526,22 @@ class ZipQueryApp(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.image_container = QWidget()
         self.image_grid = QGridLayout()
-        self.image_grid.setSpacing(5)  # 減小間距
+        self.image_grid.setSpacing(5)
         self.image_container.setLayout(self.image_grid)
         self.scroll_area.setWidget(self.image_container)
         preview_layout.addWidget(self.scroll_area)
-        
-        preview_widget.setLayout(preview_layout)
-        right_container_layout.addWidget(preview_widget, 2)  # 佔據 2/3 空間
-        
-        # === 右側詳細資料區 ===
-        details_widget = QWidget()
-        details_layout = QVBoxLayout()
-        details_layout.setSpacing(10)
-        
-        # 標題
-        details_layout.addWidget(QLabel("詳細資料"))
-        
-        # 修改按鈕
-        self.edit_button = QPushButton("修改資料")
-        self.edit_button.clicked.connect(self.edit_record)
-        details_layout.addWidget(self.edit_button)
-        
-        # 預覽圖
-        self.details_image = QLabel()
-        self.details_image.setFixedSize(200, 200)
-        self.details_image.setScaledContents(True)
-        details_layout.addWidget(self.details_image)
-        
-        # 名稱（可點擊複製）
-        self.details_name = QLabel()
-        self.details_name.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.details_name.mousePressEvent = lambda e: self.copy_name_to_clipboard()
-        details_layout.addWidget(self.details_name)
-        
-        # 網址
-        self.details_url = QLabel()
-        self.details_url.setWordWrap(True)
-        details_layout.addWidget(self.details_url)
-        
-        # 標籤
-        self.details_tags = QLabel()
-        self.details_tags.setWordWrap(True)
-        details_layout.addWidget(self.details_tags)
-        
-        details_layout.addStretch()
-        details_widget.setLayout(details_layout)
-        right_container_layout.addWidget(details_widget, 1)  # 佔據 1/3 空間
-        
-        right_container.setLayout(right_container_layout)
-        splitter.addWidget(right_container)
-        splitter.setSizes([250, 850])
+
+        # 將左側和右側加入分割器
+        splitter.addWidget(left_widget)
+        splitter.addWidget(preview_widget)
+        splitter.setStretchFactor(0, 0)  # 左側不自動延展
+        splitter.setStretchFactor(1, 1)  # 右側自動延展
+        splitter.setSizes([300, 800])  # 設定初始寬度比例
+
         main_layout.addWidget(splitter)
-        
         self.setLayout(main_layout)
-        # 套用 macOS 類似風格（淺灰背景、圓角、藍色主按鈕）
+
+        # 套用 macOS 風格
         mac_style = """
         QWidget {
             background-color: #F2F2F2;
@@ -546,13 +576,14 @@ class ZipQueryApp(QWidget):
             color: #333333;
         }
         """
-        # 初始載入資料與語言設定
+        self.setStyleSheet(mac_style)
+
+        # 初始載入
         self.zip_files = self.load_scan_records()
         self.current_selected_character = None
         self.current_zip_paths = []
         self.sort_mode_combo.currentTextChanged.connect(self.on_view_mode_changed)
         self.on_sort_mode_changed(self.sort_mode_combo.currentText())
-        self.setStyleSheet(mac_style)
         self.change_language(self.current_language)
         if self.avatars:
             self.character_combo.setCurrentIndex(0)
@@ -576,7 +607,7 @@ class ZipQueryApp(QWidget):
             self.zip_files = self.scan_archives(new_folder)
             
             # 建立資料庫檔案路徑（在程式同一資料夾）
-            scan_record_path = BASE_DIR / SCAN_RECORD_FILE
+            scan_record_path = os.path.join(BASE_DIR, SCAN_RECORD_FILE)
             logger.info("將建立資料庫檔案：%s", scan_record_path)
             
             # 寫入 JSON 檔案
@@ -638,6 +669,7 @@ class ZipQueryApp(QWidget):
 
             self.current_selected_character = selected_character
             self.current_zip_paths.clear()
+            self.current_image_entries = []  # 新增：清空對應列表
 
             # 確保 zip_files 是字典類型
             if not isinstance(self.zip_files, dict):
@@ -655,9 +687,11 @@ class ZipQueryApp(QWidget):
                     if not data.get("characters") or selected_character not in data["characters"]:
                         continue
 
-                    # 3. 分類篩選
-                    if selected_category != "全部" and selected_category not in data.get("category", []):
-                        continue
+                    # 3. 分類篩選（用英文分類）
+                    if selected_category != "All":
+                        tags_en = [CATEGORY_MAP.get(tag, tag) for tag in data.get("tags", [])]
+                        if selected_category not in tags_en:
+                            continue
 
                     # 4. 標籤篩選
                     if tag_query:
@@ -671,6 +705,7 @@ class ZipQueryApp(QWidget):
                         cached_image_path = os.path.join(IMAGE_CACHE_DIR, cached_image)
                         if os.path.isfile(cached_image_path):
                             self.current_zip_paths.append(cached_image_path)
+                            self.current_image_entries.append((zip_name, cached_image_path))  # 新增：記錄對應
                             logger.debug(f"找到符合的檔案：{zip_name}")
                         else:
                             logger.warning(f"快取圖片路徑無效或不存在：{cached_image_path}")
@@ -682,6 +717,8 @@ class ZipQueryApp(QWidget):
             if not isinstance(self.current_zip_paths, list):
                 logger.warning("current_zip_paths 不是 list，重置為空列表")
                 self.current_zip_paths = []
+            if not isinstance(self.current_image_entries, list):
+                self.current_image_entries = []
 
             logger.info(f"找到 {len(self.current_zip_paths)} 個符合的檔案")
             self.display_images()
@@ -702,14 +739,44 @@ class ZipQueryApp(QWidget):
             print(f"🌍 切換語言至: {language}")
 
     def apply_language(self, lang_code):
-        T = self.languages.get(lang_code, {})
+        T = self.languages.get(lang_code, DEFAULT_STRINGS)
+        # 主視窗標題與上方資訊
         self.setWindowTitle(T.get("window_title", "衣服查詢器"))
         self.info_label.setText(f"{T.get('author', '')}   {T.get('version', '')}")
         self.reload_button.setText(T.get("reload", "重新載入"))
         self.add_character_button.setText(T.get("add_character", "新增角色"))
         self.language_selector.setToolTip(T.get("select_language", "切換語言"))
         self.new_database_button.setText(T.get("new_database", "新資料庫"))
-        # 其他 UI 文字如有需要可在此補充
+
+        # 左側篩選欄（這裡修正為多語言）
+        self.asset_type_label.setText(T.get("asset_type", "資產類型："))
+        self.category_label.setText(T.get("category", "分類："))
+        self.tags_label.setText(T.get("tags", "標籤："))
+        self.character_label.setText(T.get("character", "角色："))
+        # ComboBox: 分類
+        self.category_combo.clear()
+        self.category_combo.addItem("All")
+        self.category_combo.addItems(T.get("all_categories", ["Cloth", "Item", "Hair", "Other"]))
+        # ComboBox: 資產類型（如需多語言可擴充）
+        self.asset_type_combo.clear()
+        self.asset_type_combo.addItem("全部")
+        self.asset_type_combo.addItems(["Avatar", "相關", "World"])  # 如需多語言可改為 T.get("asset_type_options", ...)
+        # 搜尋欄、標籤欄 placeholder
+        self.search_input.setPlaceholderText(T.get("search_placeholder", "搜尋資產…"))
+        self.tag_input.setPlaceholderText(T.get("tag_placeholder", "Enter tags (suggest English, comma separated)..."))
+        # Avatar 支援
+        self.avatar_support_checkbox.setText(T.get("avatar_support", "僅顯示支援 Avatar"))
+        # 排序方式
+        self.sort_label.setText(T.get("sort_mode", "排序方式："))
+        # 右側詳細資料區
+        self.details_title_label.setText(T.get("detail_info", "詳細資料"))
+        self.edit_button.setText(T.get("edit_button", "修改資料"))
+        self.details_tags_label.setText(T.get("detail_tags", "標籤："))
+        # 角色選單
+        self.character_combo.clear()
+        self.character_combo.addItems(self.avatars)
+        # 重新整理顯示
+        self.display_images()
 
     def check_existing_data(self):
         """程式啟動時，先詢問語言，再確認資料庫位置"""
@@ -723,9 +790,9 @@ class ZipQueryApp(QWidget):
             self.update_scan()
     def load_scan_records(self):
         """載入並正規化掃描記錄"""
-        scan_record_path = BASE_DIR / SCAN_RECORD_FILE
+        scan_record_path = os.path.join(BASE_DIR, SCAN_RECORD_FILE)
         
-        if scan_record_path.exists():
+        if os.path.exists(scan_record_path):
             with open(scan_record_path, 'r', encoding='utf-8') as f:
                 raw_data = json.load(f)
                 
@@ -783,6 +850,7 @@ class ZipQueryApp(QWidget):
 
             self.current_selected_character = selected_character
             self.current_zip_paths.clear()
+            self.current_image_entries = []  # 新增：清空對應列表
 
             # 確保 zip_files 是字典類型
             if not isinstance(self.zip_files, dict):
@@ -800,9 +868,11 @@ class ZipQueryApp(QWidget):
                     if not data.get("characters") or selected_character not in data["characters"]:
                         continue
 
-                    # 3. 分類篩選
-                    if selected_category != "全部" and selected_category not in data.get("category", []):
-                        continue
+                    # 3. 分類篩選（用英文分類）
+                    if selected_category != "All":
+                        tags_en = [CATEGORY_MAP.get(tag, tag) for tag in data.get("tags", [])]
+                        if selected_category not in tags_en:
+                            continue
 
                     # 4. 標籤篩選
                     if tag_query:
@@ -816,6 +886,7 @@ class ZipQueryApp(QWidget):
                         cached_image_path = os.path.join(IMAGE_CACHE_DIR, cached_image)
                         if os.path.isfile(cached_image_path):
                             self.current_zip_paths.append(cached_image_path)
+                            self.current_image_entries.append((zip_name, cached_image_path))  # 新增：記錄對應
                             logger.debug(f"找到符合的檔案：{zip_name}")
                         else:
                             logger.warning(f"快取圖片路徑無效或不存在：{cached_image_path}")
@@ -827,6 +898,8 @@ class ZipQueryApp(QWidget):
             if not isinstance(self.current_zip_paths, list):
                 logger.warning("current_zip_paths 不是 list，重置為空列表")
                 self.current_zip_paths = []
+            if not isinstance(self.current_image_entries, list):
+                self.current_image_entries = []
 
             logger.info(f"找到 {len(self.current_zip_paths)} 個符合的檔案")
             self.display_images()
@@ -836,7 +909,6 @@ class ZipQueryApp(QWidget):
         finally:
             self.character_combo.setEnabled(True)
             self.hide_loading_dialog()
-
 
     def show_loading_dialog(self):
         """顯示加載中對話框，根據當前語言變更顯示文字"""
@@ -863,72 +935,88 @@ class ZipQueryApp(QWidget):
                 return image_path
         return None
     def copy_to_cache(self, source_path, archive_name):
-        cached_image_path = os.path.join(IMAGE_CACHE_DIR, archive_name + ".jpg")
-        shutil.copy(source_path, cached_image_path)
-
-
-
+        """複製 ZIP 同目錄的圖片到快取資料夾，並回傳快取檔名"""
+        try:
+            # 取得副檔名
+            ext = os.path.splitext(source_path)[-1]
+            cached_name = f"{archive_name}{ext}"
+            cached_path = os.path.join(IMAGE_CACHE_DIR, cached_name)
+            # 複製圖片
+            with open(source_path, 'rb') as src, open(cached_path, 'wb') as dst:
+                dst.write(src.read())
+            return cached_name  # 只回傳檔名，scan_records.json 只存檔名
+        except Exception as e:
+            logger.error(f"快取圖片失敗: {e}")
+            return None
 
     def display_images(self):
-        """顯示圖片到網格佈局中"""
         logger.info("開始顯示圖片")
         try:
-            # 清除現有的圖片
             for i in reversed(range(self.image_grid.count())):
                 widget = self.image_grid.itemAt(i).widget()
                 if widget:
                     widget.setParent(None)
-
             row, col = 0, 0
-            items_per_row = 4  # 預設每行顯示 4 張圖片
-
-            for cached_image_path in self.current_zip_paths:
+            items_per_row = 5 # 排數顯示數量
+            for zip_name, cached_image_path in getattr(self, 'current_image_entries', []):
+                # 預設圖路徑
+                default_img = os.path.join(BASE_DIR, "Data", "no_image.png")
                 if not cached_image_path or not os.path.isfile(cached_image_path):
-                    logger.warning(f"忽略無效的快取圖片路徑：{cached_image_path}")
-                    continue
-
+                    logger.warning(f"忽略無效的快取圖片路徑：{cached_image_path}，改用預設圖")
+                    cached_image_path = default_img
                 try:
                     pixmap = QPixmap(cached_image_path)
                     if not pixmap.isNull():
-                        # 創建容器和佈局
                         container = QWidget()
                         vbox = QVBoxLayout()
                         vbox.setSpacing(5)
-                        
-                        # 設置圖片
                         label = QLabel()
-                        scaled_pixmap = pixmap.scaled(150, 150, 
-                                                Qt.AspectRatioMode.KeepAspectRatio,
-                                                Qt.TransformationMode.SmoothTransformation)
+                        scaled_pixmap = pixmap.scaled(
+                            150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                         label.setPixmap(scaled_pixmap)
                         label.setFixedSize(150, 150)
                         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        
-                        # 添加到佈局
+                        label.setScaledContents(True)  # 可選：讓 QLabel 自動縮放，畫質更佳
+                        # 正確綁定 zip_name
+                        label.mousePressEvent = lambda event, zn=zip_name: self.display_file_details(zn)
                         vbox.addWidget(label)
                         container.setLayout(vbox)
-                        
-                        # 添加到網格
                         self.image_grid.addWidget(container, row, col)
-                        
-                        # 更新行列位置
                         col += 1
                         if col >= items_per_row:
                             col = 0
                             row += 1
                     else:
-                        logger.warning(f"無法載入圖片：{cached_image_path}")
+                        logger.warning(f"無法載入圖片：{cached_image_path}，改用預設圖")
+                        pixmap = QPixmap(default_img)
+                        container = QWidget()
+                        vbox = QVBoxLayout()
+                        vbox.setSpacing(5)
+                        label = QLabel()
+                        scaled_pixmap = pixmap.scaled(
+                            150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        label.setPixmap(scaled_pixmap)
+                        label.setFixedSize(150, 150)
+                        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        label.setScaledContents(True)  # 可選：讓 QLabel 自動縮放，畫質更佳
+                        # 正確綁定 zip_name
+                        label.mousePressEvent = lambda event, zn=zip_name: self.display_file_details(zn)
+                        vbox.addWidget(label)
+                        container.setLayout(vbox)
+                        self.image_grid.addWidget(container, row, col)
+                        col += 1
+                        if col >= items_per_row:
+                            col = 0
+                            row += 1
                 except Exception as e:
                     logger.error(f"處理圖片時發生錯誤 ({cached_image_path}): {str(e)}")
                     continue
-
-        logger.info("圖片顯示完成")
-        self.image_container.update()
-        self.image_container.repaint()
-        
-    except Exception as e:
-        logger.exception("顯示圖片時發生錯誤")
-        QMessageBox.warning(self, "錯誤", f"顯示圖片時發生錯誤：\n{str(e)}")
+            logger.info("圖片顯示完成")
+            self.image_container.update()
+            self.image_container.repaint()
+        except Exception as e:
+            logger.exception("顯示圖片時發生錯誤")
+            QMessageBox.warning(self, "錯誤", f"顯示圖片時發生錯誤：\n{str(e)}")
 
     def open_archive(self, archive_path):
         if not os.path.exists(archive_path):
@@ -967,73 +1055,47 @@ class ZipQueryApp(QWidget):
         return pixmap
     
     def save_image(self, image_data, archive_name):
-        """保存圖片到快取目錄"""
-        try:
-            cached_image_path = os.path.join(IMAGE_CACHE_DIR, archive_name + ".jpg")
-            with open(cached_image_path, "wb") as f:
-                f.write(image_data)
-            logger.info(f"已保存圖片到快取：{cached_image_path}")
-            return True
-        except Exception as e:
-            logger.error(f"保存圖片失敗 ({archive_name}): {str(e)}")
-            return False
+        cached_image_path = os.path.join(IMAGE_CACHE_DIR, archive_name + ".jpg")
+        with open(cached_image_path, "wb") as f:
+            f.write(image_data)
 
 
     def update_scan(self):
-        """用戶選擇 ZIP 資料夾並更新掃描資料"""
-        try:
-            if not hasattr(self, 'scan_folder') or not self.scan_folder:
-                self.scan_folder = QFileDialog.getExistingDirectory(
-                    self, 
-                    self.languages[self.current_language]["select_folder"]
-                )
+        """ 用戶選擇 ZIP 資料夾並更新掃描資料 """
+        if not hasattr(self, 'scan_folder') or not self.scan_folder:
+            self.scan_folder = QFileDialog.getExistingDirectory(self, "選擇 ZIP/RAR 資料夾")
+        
+        if self.scan_folder:
+            self.zip_files = self.scan_archives(self.scan_folder)  # 先掃描 ZIP 資料
+            with open(SCAN_RECORD_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.zip_files, f, indent=4, ensure_ascii=False)
+            print("✅ scan_records.json 已更新！")
+
+            self.prompt_cache_creation()  # **🔹 確保這一行會執行**
+
+
             
-            if self.scan_folder:
-                # 掃描 ZIP 資料
-                self.zip_files = self.scan_archives(self.scan_folder)
-                
-                # 保存到 JSON 檔案
-                try:
-                    with open(SCAN_RECORD_FILE, 'w', encoding='utf-8') as f:
-                        json.dump(self.zip_files, f, indent=4, ensure_ascii=False)
-                    logger.info("成功更新 scan_records.json")
-                except Exception as save_e:
-                    logger.error(f"保存掃描記錄失敗: {str(save_e)}")
-                    return False
-
-                # 建立圖片快取
-                self.prompt_cache_creation()
-                return True
-                
-            return False
-        except Exception as e:
-            logger.exception("更新掃描資料時發生錯誤")
-            return False
-
     def prompt_cache_creation(self):
-        """詢問用戶是否建立快取"""
+        """詢問用戶是否建立快取（視窗自動置頂）"""
         try:
-            # 取得當前語言的文字，如果不存在則使用預設值
             texts = self.languages.get(self.current_language, DEFAULT_STRINGS)
             title = texts.get("cache_title", DEFAULT_STRINGS["cache_title"])
             message = texts.get("cache_message", DEFAULT_STRINGS["cache_message"])
-
-            reply = QMessageBox.question(
-                self, 
-                title, 
-                message, 
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-
+            msg = QMessageBox(self)
+            msg.setWindowTitle(title)
+            msg.setText(message)
+            msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            # 置頂
+            msg.setWindowModality(Qt.WindowModality.ApplicationModal)
+            msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+            reply = msg.exec()
             if reply == QMessageBox.StandardButton.Yes:
                 logger.info("用戶選擇建立圖片快取")
                 self.create_image_cache()
             else:
                 logger.info("用戶取消建立圖片快取")
-                
         except Exception as e:
             logger.exception("顯示快取建立對話框時發生錯誤")
-            # 如果發生錯誤，直接建立快取，避免程式中斷
             logger.info("因發生錯誤，自動建立圖片快取")
             self.create_image_cache()
 
@@ -1098,7 +1160,7 @@ class ZipQueryApp(QWidget):
                                     self.save_image(image_data, archive_name)
                                     data["cached_image"] = cached_image_name
                                     updated_records = True
-                                    logger.info(f"已建立快取（壓縮檔內圖片）：{cached_image_name}")
+                                    logger.info(f"已建立快取（壓缩檔內圖片）：{cached_image_name}")
                     except Exception as zip_e:
                         logger.error(f"處理壓縮檔時發生錯誤 ({archive_path}): {str(zip_e)}")
                         data["cached_image"] = None
@@ -1121,70 +1183,33 @@ class ZipQueryApp(QWidget):
             logger.exception("建立圖片快取時發生錯誤")
             QMessageBox.warning(self, "錯誤", f"建立圖片快取時發生錯誤：\n{str(e)}")
     def scan_archives(self, folder):
-        """掃描 ZIP 資料夾，建立完整的 scan_records.json"""
-        logger.info(f"開始掃描資料夾：{folder}")
-        
-        # 檢查目錄是否存在
-        if not os.path.isdir(folder):
-            logger.error(f"指定的資料夾不存在：{folder}")
-            return {}
-
-        # 先讀取現有記錄，以保留已有的 tags 和 url
-        try:
-            existing_records = self.load_scan_records()
-            if not isinstance(existing_records, dict):
-                logger.warning("現有記錄格式不正確，重置為空字典")
-                existing_records = {}
-        except Exception as e:
-            logger.error(f"讀取現有記錄時發生錯誤：{str(e)}")
-            existing_records = {}
-
+        """掃描 ZIP 資料夾，建立 scan_records.json，但不儲存 path"""
         archive_files = {}
-        
-        try:
-            for file in os.listdir(folder):
+
+        for file in os.listdir(folder):
+            if file.endswith(".zip") or file.endswith(".rar"):
+                archive_name = file
+                cached_image_path = os.path.join(IMAGE_CACHE_DIR, archive_name + ".jpg")
+
+                archive_files[archive_name] = {
+                    "characters": [],
+                    "cached_image": cached_image_path if os.path.exists(cached_image_path) else None
+                }
+
                 try:
-                    file_path = os.path.join(folder, file)
-                    if not os.path.isfile(file_path):
-                        continue
+                    with self.open_archive(os.path.join(folder, file)) as archive:
+                        found_chars = [char for char in self.avatars if any(char.lower() in f.lower() for f in archive.namelist())]
+                        archive_files[archive_name]["characters"] = found_chars
 
-                    if file.lower().endswith(('.zip', '.rar')):
-                        logger.debug(f"處理壓縮檔：{file}")
-                        
-                        # 檢查是否已有記錄
-                        if file in existing_records:
-                            archive_files[file] = existing_records[file]
-                            logger.debug(f"使用現有記錄：{file}")
-                            continue
+                        for char in found_chars:
+                            if char not in self.avatars:
+                                self.avatars.append(char)
 
-                        # 建立新記錄
-                        try:
-                            with self.open_archive(file_path) as archive:
-                                if not archive:
-                                    logger.error(f"無法開啟壓縮檔：{file}")
-                                    continue
+                        save_avatars(self.avatars)
+                except:
+                    continue  # 若 ZIP 損壞，則跳過
 
-                                # 基本資訊
-                                archive_files[file] = {
-                                    "type": "Avatar",  # 預設類型
-                                    "characters": [],   # 支援的角色
-                                    "category": [],    # 分類
-                                    "tags": [],        # 標籤
-                                    "cached_image": None,
-                                    "added_time": datetime.now().isoformat()
-                                }
-                                logger.info(f"成功建立新記錄：{file}")
-                        except Exception as zip_e:
-                            logger.error(f"處理壓縮檔時發生錯誤 ({file}): {str(zip_e)}")
-                            continue
-
-                except Exception as file_e:
-                    logger.error(f"處理檔案時發生錯誤 ({file}): {str(file_e)}")
-                    continue
-
-        logger.info(f"掃描完成，共處理 {len(archive_files)} 個檔案")
         return archive_files
-
 
     def add_new_character(self):
         text, ok = QInputDialog.getText(self, "新增角色", "請輸入角色名稱:")
@@ -1268,48 +1293,56 @@ class ZipQueryApp(QWidget):
             # 確保檔名有 .zip 後綴
             if not normalized_name.endswith('.zip'):
                 normalized_name += '.zip'
-            print(f"🔍 正在查詢檔案詳細資料: {normalized_name}")
-            print(f"📑 可用的檔案列表: {list(self.zip_files.keys())}")
-            
-            # 從記錄中獲取完整資料
+            logger.info(f"查詢檔案詳細資料: {normalized_name}")
             file_data = self.zip_files.get(normalized_name)
             if not file_data:
-                print(f"❌ 找不到檔案資料: {normalized_name}")
+                logger.warning(f"找不到檔案資料: {normalized_name}")
                 self.clear_details()
                 return
-            
             # 設置預覽圖
             cached_image = file_data.get("cached_image")
             if cached_image and cached_image != "null":
                 image_path = os.path.join(IMAGE_CACHE_DIR, cached_image)
                 if os.path.exists(image_path):
                     pixmap = QPixmap(image_path)
-                    scaled_pixmap = pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                     self.details_image.setPixmap(scaled_pixmap)
-                    print(f"✅ 已載入詳細資料圖片: {image_path}")
-            
+                else:
+                    self.details_image.clear()
+            else:
+                self.details_image.clear()
             # 設置名稱（移除副檔名）
             base_name = os.path.splitext(normalized_name)[0]
             self.details_name.setText(base_name)
-            
-            # 設置網址（使用空字串替代 "null"）
+            # 設置網址
             url = file_data.get("url", "")
-            self.details_url.setText(f"網址: {url if url and url != 'null' else '無'}")
-            
+            self.details_url.setText(f"網址: {url if url and url != 'null' else '無'}")            
             # 設置標籤
             tags = file_data.get("tags", [])
-            tag_text = ', '.join(tags) if tags and tags != ["null"] else '無'
-            self.details_tags.setText(f"標籤: {tag_text}")
-            
+            tag_text = ', '.join(tags) if tags and tags != ["null"] else '無'            
+            self.details_tags_label.setText(f"標籤: {tag_text}")
+            # 僅顯示標籤文字，不產生複選框
+            while self.details_tag_checkboxes.count():
+                child = self.details_tag_checkboxes.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            # 允許編輯
+            self.edit_button.clicked.disconnect()
+            self.edit_button.clicked.connect(lambda: self.edit_record(normalized_name))
         except Exception as e:
-            print(f"❌ 顯示詳細資料時發生錯誤: {e}")
-            self.clear_details()    
+            logger.error(f"顯示詳細資料時發生錯誤: {e}")
+            self.clear_details()
     def clear_details(self):
         """清空詳細資料面板"""
         self.details_image.clear()
         self.details_name.setText("未選擇檔案")
         self.details_url.setText("網址: 無")
-        self.details_tags.setText("標籤: 無")
+        self.details_tags_label.setText("標籤: 無")
+        # 清空標籤複選框
+        while self.details_tag_checkboxes.count():
+            child = self.details_tag_checkboxes.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
         print("🧹 清空詳細資料面板")
 
     def copy_name_to_clipboard(self):
@@ -1323,80 +1356,74 @@ class ZipQueryApp(QWidget):
         if not self.details_name.text() or self.details_name.text() == "未選擇檔案":
             return
 
+        # 取得當前語言字典
+        T = self.languages.get(self.current_language, DEFAULT_STRINGS)
         # 取得當前檔案資料
         file_data = self.zip_files.get(file_name, {})
-        
-        # 創建編輯對話框
+        # 取得現有分類（category）
+        # current_categories = set(file_data.get("category", []))  # 移除 category 欄位
+        # 預設分類
+        all_categories = CATEGORY_LIST_EN        # 創建編輯對話框
         dialog = QDialog(self)
-        dialog.setWindowTitle("編輯資料")
+        dialog.setWindowTitle(T.get("edit_button", "修改資料"))
         dialog.setFixedWidth(400)
         layout = QVBoxLayout()
-        
+
         # 網址輸入
-        url_label = QLabel("網址:")
+        url_label = QLabel(T.get("detail_url", "網址:"))
         url_input = QLineEdit(file_data.get("url", ""))
         layout.addWidget(url_label)
         layout.addWidget(url_input)
-        
-        # 已有標籤顯示
-        current_tags = file_data.get("tags", [])
-        tags_label = QLabel("現有標籤:")
-        tags_display = QLabel(", ".join(current_tags) if current_tags else "無")
-        layout.addWidget(tags_label)
-        layout.addWidget(tags_display)
-        
-        # 新增標籤輸入
-        new_tags_label = QLabel("新增標籤 (用逗號分隔):")
-        new_tags_input = QLineEdit()
-        new_tags_input.setPlaceholderText("例如: 可愛, 粉色, 洛麗塔")
-        layout.addWidget(new_tags_label)
-        layout.addWidget(new_tags_input)
-        
-        # 按鈕
-        button_layout = QHBoxLayout()
-        save_button = QPushButton("儲存")
-        cancel_button = QPushButton("取消")
-        button_layout.addWidget(cancel_button)
-        button_layout.addWidget(save_button)
-        layout.addLayout(button_layout)
-        
+
+        # 分類複選框區塊
+        cat_label = QLabel(T.get("category", "分類："))
+        cat_label.setStyleSheet("font-weight:bold;margin-top:8px;")
+        layout.addWidget(cat_label)
+        cat_checkbox_list = []
+        # 取得現有 tags
+        current_tags = set(CATEGORY_MAP.get(t, t) for t in file_data.get("tags", []))
+        for cat in all_categories:
+            cb = QCheckBox(cat)
+            if cat in current_tags:
+                cb.setChecked(True)
+            cat_checkbox_list.append(cb)
+            layout.addWidget(cb)
+
+        # 其它標籤輸入
+        tag_label = QLabel(T.get("tags", "標籤："))
+        tag_label.setStyleSheet("font-weight:bold;margin-top:8px;")
+        layout.addWidget(tag_label)
+        tag_input = QLineEdit(', '.join([t for t in current_tags if t not in all_categories]))
+        tag_input.setPlaceholderText("Enter tags (suggest English, comma separated)...")
+        layout.addWidget(tag_input)
+
+        # 儲存按鈕
+        save_btn = QPushButton(T.get("save", "儲存"))
+        layout.addWidget(save_btn)
         dialog.setLayout(layout)
-        
+
         def on_save():
-            # 取得並處理新標籤
-            new_tags = [tag.strip() for tag in new_tags_input.text().split(",") if tag.strip()]
-            
-            # 更新檔案資料
-            if "tags" not in file_data:
-                file_data["tags"] = []
-            
-            # 合併新舊標籤並去除重複
-            file_data["tags"].extend(new_tags)
-            file_data["tags"] = list(dict.fromkeys(file_data["tags"]))
-            
-            # 更新網址
-            file_data["url"] = url_input.text().strip()
-            
-            # 保存回檔案記錄
-            self.zip_files[file_name] = file_data
-            
-            # 更新資料庫文件
-            try:
-                with open(os.path.join(self.scan_folder, SCAN_RECORD_FILE), 'w', encoding='utf-8') as f:
-                    json.dump(self.zip_files, f, indent=4, ensure_ascii=False)
-                logger.info("成功更新資料庫")
-            except Exception as e:
-                logger.exception("更新資料庫時發生錯誤")
-                self._show_error_dialog("錯誤", f"更新資料庫時發生錯誤：\n{str(e)}")
-            
-            # 更新顯示
-            self.display_file_details(file_name)
+            # 儲存網址
+            file_data["url"] = url_input.text().strip() or "null"
+            # 儲存分類複選框到 tags
+            selected_cats = [cb.text() for cb in cat_checkbox_list if cb.isChecked()]
+            # 其它標籤
+            extra_tags = [t.strip() for t in tag_input.text().split(',') if t.strip()]
+            # 合併所有標籤
+            tags = selected_cats + [t for t in extra_tags if t not in selected_cats]
+            file_data["tags"] = tags if tags else []
+            if "category" in file_data:
+                del file_data["category"]
+            # 寫回 scan_records.json
+            scan_record_path = os.path.join(BASE_DIR, SCAN_RECORD_FILE)
+            with open(scan_record_path, 'w', encoding='utf-8') as f:
+                json.dump(self.zip_files, f, ensure_ascii=False, indent=4)
             dialog.accept()
-        
-        save_button.clicked.connect(on_save)
-        cancel_button.clicked.connect(dialog.reject)
-        
+            self.display_file_details(file_name)
+
+        save_btn.clicked.connect(on_save)
         dialog.exec()
+
     def debug_file_info(self, file_name):
         """印出檔案相關的除錯資訊"""
         print("\n=== 檔案資訊除錯 ===")
@@ -1417,6 +1444,15 @@ class ZipQueryApp(QWidget):
         for key in self.zip_files.keys():
             print(f"- {key}")
         print("==================\n")
+
+    def on_toggle_details(self):
+        """切換詳細資料的顯示／隱藏並更新按鈕文字"""
+        if self.details_frame.isVisible():
+            self.details_frame.hide()
+            self.toggle_details_btn.setText('<<<')
+        else:
+            self.details_frame.show()
+            self.toggle_details_btn.setText('>>>')
 
 def normalize_filename(filename):
     """標準化檔案名稱，移除重複的 .zip 副檔名"""
@@ -1449,6 +1485,10 @@ def normalize_record(data):
                 val = "null"
                 
         normalized[key] = val
+    # 將 tags 內分類中文自動轉英文
+    tags = data.get("tags", [])
+    tags = [CATEGORY_MAP.get(tag, tag) for tag in tags]
+    normalized["tags"] = tags
     return normalized
 
 def merge_records(old, new):
