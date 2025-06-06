@@ -890,28 +890,26 @@ class ZipQueryApp(QWidget):
                 try:
                     pixmap = QPixmap(cached_image_path)
                     if not pixmap.isNull():
-                        # 創建容器和佈局
                         container = QWidget()
                         vbox = QVBoxLayout()
                         vbox.setSpacing(5)
-                        
-                        # 設置圖片
+
                         label = QLabel()
-                        scaled_pixmap = pixmap.scaled(150, 150, 
-                                                Qt.AspectRatioMode.KeepAspectRatio,
-                                                Qt.TransformationMode.SmoothTransformation)
+                        scaled_pixmap = pixmap.scaled(
+                            150,
+                            150,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
                         label.setPixmap(scaled_pixmap)
                         label.setFixedSize(150, 150)
                         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        
-                        # 添加到佈局
+
                         vbox.addWidget(label)
                         container.setLayout(vbox)
-                        
-                        # 添加到網格
+
                         self.image_grid.addWidget(container, row, col)
-                        
-                        # 更新行列位置
+
                         col += 1
                         if col >= items_per_row:
                             col = 0
@@ -919,16 +917,20 @@ class ZipQueryApp(QWidget):
                     else:
                         logger.warning(f"無法載入圖片：{cached_image_path}")
                 except Exception as e:
-                    logger.error(f"處理圖片時發生錯誤 ({cached_image_path}): {str(e)}")
+                    logger.error(
+                        f"處理圖片時發生錯誤 ({cached_image_path}): {str(e)}"
+                    )
                     continue
 
-        logger.info("圖片顯示完成")
-        self.image_container.update()
-        self.image_container.repaint()
-        
-    except Exception as e:
-        logger.exception("顯示圖片時發生錯誤")
-        QMessageBox.warning(self, "錯誤", f"顯示圖片時發生錯誤：\n{str(e)}")
+            logger.info("圖片顯示完成")
+            self.image_container.update()
+            self.image_container.repaint()
+
+        except Exception as e:
+            logger.exception("顯示圖片時發生錯誤")
+            QMessageBox.warning(
+                self, "錯誤", f"顯示圖片時發生錯誤：\n{str(e)}"
+            )
 
     def open_archive(self, archive_path):
         if not os.path.exists(archive_path):
@@ -1181,6 +1183,8 @@ class ZipQueryApp(QWidget):
                 except Exception as file_e:
                     logger.error(f"處理檔案時發生錯誤 ({file}): {str(file_e)}")
                     continue
+        except Exception as e:
+            logger.error(f"掃描資料夾時發生錯誤: {str(e)}")
 
         logger.info(f"掃描完成，共處理 {len(archive_files)} 個檔案")
         return archive_files
